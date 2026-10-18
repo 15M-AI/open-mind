@@ -1,29 +1,29 @@
 # Open Mind
 
-**Open Mind** es un ecosistema local para entrenar, guardar y ejecutar modelos
-en el formato binario propio **OMF**. Está organizado como un monorepo con tres
-componentes y no descarga modelos ni utiliza GGUF.
+**Open Mind** is a local ecosystem for training, storing, and running models in
+the native **OMF** binary format. It is organized as a three-component
+monorepo, does not download model weights, and does not use GGUF.
 
-> **Estado:** v0.1 experimental. El runtime no tiene todavía streaming,
-autenticación ni TLS. Mantén el servidor ligado a `127.0.0.1` salvo que sepas
-cómo proteger la red donde lo expones.
+> **Status:** Experimental v0.1. The runtime does not yet provide streaming,
+> authentication, or TLS. Keep the server bound to `127.0.0.1` unless you know
+> how to secure the network where you expose it.
 
-## Componentes
+## Components
 
-| Proyecto | Contenido |
+| Project | Description |
 |---|---|
-| `open-mind-format` | Especificación OMF v0.1, lector/escritor Rust y writer PyTorch |
-| `open-mind-runtime` | Inferencia CPU propia, CLI `om` y API OMA local |
-| `open-mind-train` | Entrenamiento causal PyTorch, dataset mmap y checkpoints OMF |
+| `open-mind-format` | OMF v0.1 specification, Rust reader/writer, and PyTorch writer |
+| `open-mind-runtime` | Native CPU inference, the `om` CLI, and the local OMA API |
+| `open-mind-train` | PyTorch causal training, mmap dataset access, and OMF checkpoints |
 
-## Requisitos
+## Requirements
 
-- Rust estable y Cargo.
-- Python 3.10+ y PyTorch local (`pip install -e ./open-mind-train` instala sus dependencias si faltan).
-- Datos de entrenamiento en un archivo de texto UTF-8.
+- Stable Rust and Cargo.
+- Python 3.10+ and local PyTorch (`pip install -e ./open-mind-train` installs missing dependencies).
+- Training data in a UTF-8 text file.
 
-No se descargan pesos. Para evitar escribir en el Python global, se recomienda
-usar un entorno virtual:
+No model weights are downloaded. To avoid writing to the system Python
+installation, use a virtual environment:
 
 ```bash
 cd ~/OpenMind
@@ -32,113 +32,127 @@ source .venv/bin/activate
 pip install -e ./open-mind-train
 ```
 
-## Entrenar un modelo
+## Train a model
 
-El repositorio incluye `data.txt` como muestra mínima para comprobar el flujo;
-no sirve para producir un modelo conversacional útil. Usa un corpus local más
-amplio que tengas derecho a utilizar:
+The repository includes `data.txt` as a tiny end-to-end smoke-test corpus; it
+cannot produce a useful conversational model. Use a larger local corpus that
+you have the right to use:
 
 ```bash
 python train.py --device cpu --dataset corpus.txt --output pico.omf \
   --steps 5000 --checkpoint-every 500
 ```
 
-El preset `15M` tiene 14.983.680 parámetros. En CPU, el entrenamiento usa
-acumulación de gradiente y momentum SGD cuantizado a 8 bits; los pesos del
-modelo permanecen en memoria durante el entrenamiento. El writer permite
-checkpoints `fp16` (predeterminado), `q4_0` y `q8_0`. Los checkpoints
-periódicos se guardan como `pico-v1.omf` y el final como `pico.omf`.
+The `15M` preset contains 14,983,680 parameters. CPU training uses gradient
+accumulation and 8-bit quantized SGD momentum; model weights remain in memory
+during training. The writer supports `fp16` (default), `q4_0`, and `q8_0`
+checkpoints. Periodic checkpoints are written as `pico-v1.omf`, and the final
+checkpoint is written as `pico.omf`.
 
-## Instalar y ejecutar un modelo
+## Install and run a model
 
-Compila el ejecutable local `om`:
+Build the local `om` executable:
 
 ```bash
 cargo build --release
 ./target/release/om --help
 ```
 
-Instala un OMF desde una ruta local. La instalación copia el archivo a
-`~/.open-mind/models`; los pesos no se incluyen en este repositorio:
+Install an OMF model from a local path. The file is copied to
+`~/.open-mind/models`; model weights are not included in this repository:
 
 ```bash
 ./target/release/om add pico.omf
 ./target/release/om list
 ./target/release/om show pico.omf
-./target/release/om run pico.omf --prompt "Hola" --max-tokens 64
+./target/release/om run pico.omf --prompt "Hello" --max-tokens 64
 ```
 
-`om run MODEL` sin `--prompt` abre un modo interactivo; escribe una indicación
-por línea y usa `Ctrl+D` para salir. Parámetros de generación:
+Running `om run MODEL` without `--prompt` opens an interactive mode; enter one
+prompt per line and press `Ctrl+D` to exit. Generation options:
 
 ```bash
-./target/release/om run pico.omf --prompt "Hola" \
+./target/release/om run pico.omf --prompt "Hello" \
   --temperature 0.8 --top-k 40 --seed 123
 ```
 
-Temperatura `0` selecciona greedy. Una semilla fija reproduce la secuencia
-muestreada; cambiarla no mejora el conocimiento aprendido por el modelo.
-También se puede establecer `OPEN_MIND_HOME=/ruta/local` para cambiar el
-directorio donde `om add` y `om list` guardan/encuentran modelos.
+Temperature `0` selects greedy decoding. A fixed seed reproduces a sampled
+sequence; changing it does not add knowledge to the model. Set
+`OPEN_MIND_HOME=/local/path` to change the directory where `om add` and
+`om list` store and find models.
 
-## Servir la API OMA
+## Serve the OMA API
 
 ```bash
 ./target/release/om serve --model pico.omf
 ```
 
-Escucha por defecto en `127.0.0.1:8080`. Si hay exactamente un modelo instalado,
-`om serve` puede resolverlo sin `--model`. Prueba el endpoint compatible con
-OpenAI:
+The server listens on `127.0.0.1:8080` by default. If exactly one model is
+installed, `om serve` can resolve it without `--model`. Try the OpenAI-compatible
+endpoint:
 
 ```bash
 curl http://127.0.0.1:8080/v1/generate \
   -H 'content-type: application/json' \
-  -d '{"model":"pico.omf","prompt":"Hola","max_tokens":32,"temperature":0.8,"top_k":40}'
+  -d '{"model":"pico.omf","prompt":"Hello","max_tokens":32,"temperature":0.8,"top_k":40}'
 ```
 
-También se expone `/v1/completions`. `max_tokens` tiene un máximo de 1024;
-`temperature` acepta de 0 a 2. OMA v0.1 devuelve una respuesta JSON completa,
-sin streaming.
+`/v1/completions` is also available. `max_tokens` is capped at 1024;
+`temperature` must be between 0 and 2. OMA v0.1 returns a complete JSON
+response and does not support streaming.
 
-## Estructura del monorepo
+## Optional terminal interface
+
+The separate `open-mind-tui` repository provides a keyboard-driven terminal
+manager inspired by local model tools such as Ollama. It manages OMF files
+through the `om` runtime and does not depend on Ollama:
+
+```bash
+cd ~/OpenMind-TUI
+pip install -e .
+open-mind-tui
+```
+
+See that repository's README for controls, configuration, and troubleshooting.
+
+## Monorepo layout
 
 ```text
 OpenMind/
-├── Cargo.toml                   # workspace Rust
+├── Cargo.toml                   # Rust workspace
 ├── open-mind-format/
 │   ├── OMF_SPEC.md
-│   ├── src/                     # lector y escritor Rust
+│   ├── src/                     # Rust reader and writer
 │   └── python/src/open_mind_format/
 ├── open-mind-runtime/
-│   └── src/main.rs              # CLI `om`, inferencia y API OMA
+│   └── src/main.rs              # `om` CLI, inference, and OMA API
 ├── open-mind-train/
 │   ├── pyproject.toml
 │   └── src/open_mind/
 ├── train.py
-└── data.txt                     # corpus de demostración, no pesos
+└── data.txt                     # Demo corpus, not model weights
 ```
 
-## Calidad y limitaciones
+## Quality and limitations
 
-Comprueba el workspace Rust y el writer/reader:
+Test the Rust workspace and OMF reader/writer:
 
 ```bash
 cargo test --workspace
 ```
 
-El modelo es un transformer de bytes entrenado desde cero. No es un sustituto
-de modelos preentrenados ni podrá responder con conocimiento que no aparezca
-en sus datos de entrenamiento. El runtime ejecuta inferencia en CPU; el uso de
-un preset de 15M puede ser lento en portátiles modestos.
+This is a byte-level transformer trained from scratch. It is not a replacement
+for pretrained models and cannot answer with knowledge absent from its
+training data. The runtime performs inference on CPU; the 15M preset may be
+slow on modest laptops.
 
-## Publicación en GitHub
+## Publishing to GitHub
 
-El diseño es un **monorepo**, por lo que se recomienda crear un solo repositorio:
-`open-mind` (URL sugerida: `github.com/TU_USUARIO/open-mind`). Los nombres de
-componente se conservan en sus carpetas:
-`open-mind-format`, `open-mind-runtime` y `open-mind-train`. El publicador se
-encuentra fuera de este repositorio en `~/open-mind-publisher/`.
+This project is designed as a **monorepo**, so create one repository:
+`open-mind` (suggested URL: `github.com/YOUR_USERNAME/open-mind`). The component
+names remain as directories: `open-mind-format`, `open-mind-runtime`, and
+`open-mind-train`. The publisher script lives outside this repository in
+`~/open-mind-publisher/`.
 
-Antes de hacer público el proyecto, elige y añade una licencia si quieres
-autorizar la reutilización. No se incluye una licencia por defecto.
+Choose and add a license before publishing if you want to grant reuse
+permissions. No license is included by default.

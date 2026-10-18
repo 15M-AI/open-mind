@@ -1,21 +1,21 @@
-# Contribuir
+# Contributing
 
-Gracias por ayudar a Open Mind. El proyecto está en fase v0.1 y el formato OMF
-especificado en `open-mind-format/OMF_SPEC.md` debe seguir siendo compatible
-entre el writer Python y el reader Rust.
+Thanks for helping improve Open Mind. The project is at experimental v0.1.
+Changes must preserve compatibility between the OMF specification in
+`open-mind-format/OMF_SPEC.md`, the Python writer, and the Rust reader.
 
-## Cambios
+## Changes
 
-- Mantén el código y los datos de prueba locales; no añadas pesos de modelos,
-  credenciales, datos privados ni archivos de corpus sin permiso.
-- Para cambios de formato, actualiza la especificación y ambos lados del
-  intercambio; añade una prueba de round-trip o de rechazo de datos inválidos.
-- Para cambios Rust, ejecuta `cargo test --workspace`.
-- Para cambios Python, instala en entorno virtual y ejecuta el flujo de
-  entrenamiento con el preset `tiny` y un corpus de prueba local.
-- Describe el comportamiento observable y cualquier limitación añadida.
+- Keep code and test data local; do not add model weights, credentials, private
+  data, or corpus files without permission.
+- For format changes, update the specification and both sides of the
+  interchange; add a round-trip test or a test that rejects invalid data.
+- For Rust changes, run `cargo test --workspace`.
+- For Python changes, install in a virtual environment and run the training
+  smoke test with the `tiny` preset and a local test corpus.
+- Describe observable behavior and any new limitations.
 
-## Reportar problemas
+## Reporting issues
 
-Incluye el sistema operativo, versión de Rust/Python, comando ejecutado y un
-ejemplo pequeño que no contenga datos privados ni checkpoints.
+Include the operating system, Rust/Python versions, command you ran, and a
+small example that contains no private data or model checkpoints.

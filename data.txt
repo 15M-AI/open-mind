@@ -1,3 +1,3 @@
-Hola. Este es un conjunto de datos local de ejemplo para probar Open Mind.
-El modelo aprende a predecir bytes del texto y guarda checkpoints en formato OMF.
-Añade tus propios textos con licencia adecuada para entrenar un modelo útil.
+Hello. This is a tiny local sample dataset for testing Open Mind.
+The model learns to predict bytes from text and saves checkpoints in OMF format.
+Add your own appropriately licensed text to train a useful model.
