@@ -1,6 +1,0 @@
-output/
-data/
-*.omf
-*.txt
-!README.md
-!*.template.txt

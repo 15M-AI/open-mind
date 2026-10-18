@@ -140,6 +140,7 @@ Test the Rust workspace and OMF reader/writer:
 
 ```bash
 cargo test --workspace
+PYTHONPATH=open-mind-format/python python -m unittest discover -s open-mind-format/python/tests -v
 ```
 
 This is a byte-level transformer trained from scratch. It is not a replacement

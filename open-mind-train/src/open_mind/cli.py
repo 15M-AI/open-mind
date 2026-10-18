@@ -22,6 +22,7 @@ def main() -> None:
     parser.add_argument("--eval-interval", type=int, default=500)
     parser.add_argument("--eval-batches", type=int, default=20)
     parser.add_argument("--warmup-steps", type=int, default=500)
+    parser.add_argument("--resume-from", help="resume model weights from an OMF checkpoint (optimizer state restarts)")
     args = parser.parse_args()
     Trainer(
         model=args.model,
@@ -41,4 +42,5 @@ def main() -> None:
         eval_interval=args.eval_interval,
         eval_batches=args.eval_batches,
         warmup_steps=args.warmup_steps,
+        resume_from=args.resume_from,
     ).train()

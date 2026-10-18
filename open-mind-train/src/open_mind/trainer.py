@@ -13,7 +13,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from open_mind_format import write_omf
+from open_mind_format import read_omf, write_omf
 
 _PICO_CONFIG = {
     "hidden_size": 384,
@@ -22,6 +22,7 @@ _PICO_CONFIG = {
     "heads": 6,
     "intermediate_size": 1632,
     "context": 256,
+    "dropout": 0.1,
 }
 
 PRESETS = {
@@ -34,12 +35,13 @@ PRESETS = {
         "heads": 4,
         "intermediate_size": 192,
         "context": 128,
+        "dropout": 0.1,
     },
 }
 
 
 class Block(nn.Module):
-    def __init__(self, config: Mapping[str, int]) -> None:
+    def __init__(self, config: Mapping[str, int | float]) -> None:
         super().__init__()
         hidden = config["hidden_size"]
         self.heads = config["heads"]
@@ -48,10 +50,13 @@ class Block(nn.Module):
         self.attn = nn.Module()
         self.attn.qkv = nn.Linear(hidden, 3 * hidden)
         self.attn.proj = nn.Linear(hidden, hidden)
+        self.attn_dropout = nn.Dropout(config["dropout"])
+        self.resid_dropout = nn.Dropout(config["dropout"])
         self.ln2 = nn.LayerNorm(hidden, eps=1e-5)
         self.mlp = nn.Module()
         self.mlp.fc1 = nn.Linear(hidden, config["intermediate_size"])
         self.mlp.fc2 = nn.Linear(config["intermediate_size"], hidden)
+        self.mlp_dropout = nn.Dropout(config["dropout"])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch, length, hidden = x.shape
@@ -63,28 +68,32 @@ class Block(nn.Module):
         scores = (q @ k.transpose(-2, -1)) * (self.head_dim**-0.5)
         causal = torch.ones(length, length, dtype=torch.bool, device=x.device).triu(1)
         scores = scores.masked_fill(causal, torch.finfo(scores.dtype).min)
-        attended = (scores.softmax(dim=-1) @ v).transpose(1, 2).contiguous()
+        probabilities = self.attn_dropout(scores.softmax(dim=-1))
+        attended = (probabilities @ v).transpose(1, 2).contiguous()
         attended = attended.view(batch, length, hidden)
-        x = x + self.attn.proj(attended)
+        x = x + self.resid_dropout(self.attn.proj(attended))
         hidden_state = self.mlp.fc1(self.ln2(x))
         hidden_state = F.gelu(hidden_state, approximate="tanh")
-        return x + self.mlp.fc2(hidden_state)
+        return x + self.resid_dropout(self.mlp.fc2(self.mlp_dropout(hidden_state)))
 
 
 class ByteTransformer(nn.Module):
-    def __init__(self, config: Mapping[str, int]) -> None:
+    def __init__(self, config: Mapping[str, int | float]) -> None:
         super().__init__()
         hidden = config["hidden_size"]
         self.config = dict(config)
         self.token_embedding = nn.Embedding(config["vocab"], hidden)
         self.position_embedding = nn.Embedding(config["context"], hidden)
+        self.embedding_dropout = nn.Dropout(config["dropout"])
         self.layers = nn.ModuleList(Block(config) for _ in range(config["layers"]))
         self.final_norm = nn.LayerNorm(hidden, eps=1e-5)
 
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
         _, length = tokens.shape
         positions = torch.arange(length, device=tokens.device)
-        x = self.token_embedding(tokens) + self.position_embedding(positions)[None, :, :]
+        x = self.embedding_dropout(
+            self.token_embedding(tokens) + self.position_embedding(positions)[None, :, :]
+        )
         for layer in self.layers:
             x = layer(x)
         x = self.final_norm(x)
@@ -180,6 +189,7 @@ class Trainer:
         warmup_steps: int = 500,
         min_learning_rate_ratio: float = 0.1,
         gradient_clip: float = 1.0,
+        resume_from: str | os.PathLike[str] | None = None,
     ) -> None:
         if model not in PRESETS:
             raise ValueError(f"unknown model preset {model!r}; choose from {tuple(PRESETS)}")
@@ -219,6 +229,9 @@ class Trainer:
         self.warmup_steps = warmup_steps
         self.min_learning_rate_ratio = min_learning_rate_ratio
         self.gradient_clip = gradient_clip
+        self.resume_from = Path(resume_from) if resume_from is not None else None
+        if not 0.0 <= PRESETS[model]["dropout"] < 1.0:
+            raise ValueError("model dropout must be in [0, 1)")
 
     def _save(
         self, model: ByteTransformer, path: Path, step: int, loss: float, validation_loss: float | None
@@ -248,6 +261,22 @@ class Trainer:
         config = dict(PRESETS[self.model_name])
         config["context"] = max(config["context"], self.seq_len)
         model = ByteTransformer(config).to(self.device)
+        start_step = 0
+        if self.resume_from is not None:
+            checkpoint = read_omf(self.resume_from)
+            if checkpoint.config != config:
+                raise ValueError("resume checkpoint CONFIG does not match the selected model configuration")
+            model.load_state_dict(
+                {name: torch.from_numpy(values.copy()) for name, values in checkpoint.tensors.items()},
+                strict=True,
+            )
+            start_step = int(checkpoint.metadata.get("step", 0))
+            if start_step < 0 or start_step >= self.steps:
+                raise ValueError(f"resume checkpoint step {start_step} must be below target steps {self.steps}")
+            print(
+                f"resuming weights at step {start_step}; optimizer moments restart from zero",
+                flush=True,
+            )
         if self.optimizer_name == "adamw":
             decay = []
             no_decay = []
@@ -263,6 +292,22 @@ class Trainer:
             )
         else:
             optimizer = SGD8Bit(model.parameters(), lr=self.learning_rate)
+        use_bf16 = self.device.type == "cuda" and torch.cuda.is_bf16_supported()
+        amp_enabled = self.device.type == "cuda" and (
+            use_bf16 or self.optimizer_name == "adamw"
+        )
+        amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
+        scaler = torch.cuda.amp.GradScaler(
+            enabled=amp_enabled and amp_dtype == torch.float16
+        )
+
+        def forward_loss(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+            with torch.autocast(
+                device_type=self.device.type, dtype=amp_dtype, enabled=amp_enabled
+            ):
+                logits = model(x)
+                return F.cross_entropy(logits.reshape(-1, config["vocab"]), y.reshape(-1))
+
         periodic_checkpoint = self.output.with_name(f"{self.output.stem}-v1.omf")
         data = _MMapBytes(self.dataset, self.validation_fraction)
         started = time.monotonic()
@@ -271,7 +316,7 @@ class Trainer:
         warmup_steps = min(self.warmup_steps, max(0, self.steps - 1))
         try:
             model.train()
-            for step in range(1, self.steps + 1):
+            for step in range(start_step + 1, self.steps + 1):
                 if self.optimizer_name == "adamw":
                     if step <= warmup_steps:
                         lr_ratio = step / max(1, warmup_steps)
@@ -286,12 +331,17 @@ class Trainer:
                 total_loss = 0.0
                 for _ in range(self.gradient_accumulation_steps):
                     x, y = data.batch(self.batch_size, self.seq_len, self.device, "train")
-                    logits = model(x)
-                    loss = F.cross_entropy(logits.reshape(-1, config["vocab"]), y.reshape(-1))
-                    (loss / self.gradient_accumulation_steps).backward()
+                    loss = forward_loss(x, y)
+                    scaler.scale(loss / self.gradient_accumulation_steps).backward()
                     total_loss += loss.detach().item() / self.gradient_accumulation_steps
+                if scaler.is_enabled():
+                    scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), self.gradient_clip)
-                optimizer.step()
+                if scaler.is_enabled():
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
                 last_loss = total_loss
                 should_evaluate = step == 1 or step % self.eval_interval == 0 or step == self.steps
                 if should_evaluate:
@@ -300,10 +350,7 @@ class Trainer:
                     with torch.no_grad():
                         for _ in range(self.eval_batches):
                             x, y = data.batch(self.batch_size, self.seq_len, self.device, "validation")
-                            logits = model(x)
-                            validation_losses.append(
-                                F.cross_entropy(logits.reshape(-1, config["vocab"]), y.reshape(-1)).item()
-                            )
+                            validation_losses.append(forward_loss(x, y).item())
                     last_validation_loss = float(np.mean(validation_losses))
                     model.train()
                 if step == 1 or step % 10 == 0:
