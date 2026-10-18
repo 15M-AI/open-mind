@@ -103,14 +103,14 @@ response and does not support streaming.
 
 ## Optional terminal interface
 
-The separate `open-mind-tui` repository provides a keyboard-driven terminal
+The separate `omt` repository provides a keyboard-driven terminal
 manager inspired by local model tools such as Ollama. It manages OMF files
 through the `om` runtime and does not depend on Ollama:
 
 ```bash
 cd ~/OpenMind-TUI
 make install
-open-mind-tui
+omt
 ```
 
 See that repository's README for controls, configuration, and troubleshooting.
@@ -129,6 +129,7 @@ OpenMind/
 ├── open-mind-train/
 │   ├── pyproject.toml
 │   └── src/open_mind/
+├── Pico/                        # 15M cloud training recipe and model card
 ├── train.py
 └── data.txt                     # Demo corpus, not model weights
 ```
@@ -146,10 +147,16 @@ for pretrained models and cannot answer with knowledge absent from its
 training data. The runtime performs inference on CPU; the 15M preset may be
 slow on modest laptops.
 
+The cloud training recipe for Pico is in `Pico/README.md`. Its model weights
+remain OMF and are not checked into this repository.
+
+To prepare a CUDA runner, follow that README and start with a short pilot. The
+recipe does not provision a cloud machine or download training data.
+
 ## Publishing to GitHub
 
 This project is designed as a **monorepo**, so create one repository:
-`open-mind` (suggested URL: `github.com/YOUR_USERNAME/open-mind`). The component
+`open-mind` (repository: `github.com/15M-AI/open-mind`). The component
 names remain as directories: `open-mind-format`, `open-mind-runtime`, and
 `open-mind-train`. The publisher script lives outside this repository in
 `~/open-mind-publisher/`.

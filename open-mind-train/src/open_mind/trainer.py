@@ -15,15 +15,18 @@ from torch.nn import functional as F
 
 from open_mind_format import write_omf
 
+_PICO_CONFIG = {
+    "hidden_size": 384,
+    "layers": 8,
+    "vocab": 256,
+    "heads": 6,
+    "intermediate_size": 1632,
+    "context": 256,
+}
+
 PRESETS = {
-    "15M": {
-        "hidden_size": 384,
-        "layers": 8,
-        "vocab": 256,
-        "heads": 6,
-        "intermediate_size": 1632,
-        "context": 256,
-    },
+    "15M": dict(_PICO_CONFIG),
+    "Pico": dict(_PICO_CONFIG),
     "tiny": {
         "hidden_size": 64,
         "layers": 2,
@@ -122,18 +125,25 @@ class SGD8Bit:
 
 
 class _MMapBytes:
-    def __init__(self, path: str | os.PathLike[str]) -> None:
+    def __init__(self, path: str | os.PathLike[str], val_fraction: float = 0.05) -> None:
         self.file = open(path, "rb")
         if os.fstat(self.file.fileno()).st_size < 2:
             self.file.close()
             raise ValueError("dataset must contain at least two bytes")
         self.mapping = mmap.mmap(self.file.fileno(), 0, access=mmap.ACCESS_READ)
+        self.split_at = int(len(self.mapping) * (1.0 - val_fraction))
+        if self.split_at < 2 or len(self.mapping) - self.split_at < 2:
+            self.close()
+            raise ValueError("dataset is too small for the requested train/validation split")
 
-    def batch(self, batch_size: int, seq_len: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-        last = len(self.mapping) - seq_len - 1
-        if last < 0:
-            raise ValueError(f"dataset needs at least {seq_len + 1} bytes for this sequence length")
-        starts = torch.randint(last + 1, (batch_size,)).tolist()
+    def batch(
+        self, batch_size: int, seq_len: int, device: torch.device, split: str = "train"
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        start_offset, end_offset = (0, self.split_at) if split == "train" else (self.split_at, len(self.mapping))
+        start_count = end_offset - start_offset - seq_len
+        if start_count < 1:
+            raise ValueError(f"{split} split needs at least {seq_len + 1} bytes")
+        starts = (torch.randint(start_count, (batch_size,)) + start_offset).tolist()
         inputs, targets = [], []
         for start in starts:
             inputs.append(torch.frombuffer(bytearray(self.mapping[start : start + seq_len]), dtype=torch.uint8))
@@ -162,6 +172,14 @@ class Trainer:
         learning_rate: float = 1e-3,
         dtype: str = "fp16",
         seed: int = 42,
+        optimizer: str = "sgd8bit",
+        weight_decay: float = 0.1,
+        validation_fraction: float = 0.05,
+        eval_interval: int = 500,
+        eval_batches: int = 20,
+        warmup_steps: int = 500,
+        min_learning_rate_ratio: float = 0.1,
+        gradient_clip: float = 1.0,
     ) -> None:
         if model not in PRESETS:
             raise ValueError(f"unknown model preset {model!r}; choose from {tuple(PRESETS)}")
@@ -173,6 +191,14 @@ class Trainer:
             raise ValueError("steps, checkpoint interval, batch size, and accumulation must be positive")
         if seq_len < 1 or seq_len > PRESETS[model]["context"]:
             raise ValueError(f"seq_len must be between 1 and {PRESETS[model]['context']}")
+        if optimizer not in {"sgd8bit", "adamw"}:
+            raise ValueError("optimizer must be 'sgd8bit' or 'adamw'")
+        if not 0.0 < validation_fraction < 0.5:
+            raise ValueError("validation_fraction must be between 0 and 0.5")
+        if eval_interval < 1 or eval_batches < 1 or warmup_steps < 0:
+            raise ValueError("evaluation interval/batches must be positive and warmup non-negative")
+        if not 0.0 <= min_learning_rate_ratio <= 1.0 or gradient_clip <= 0:
+            raise ValueError("min_learning_rate_ratio must be in [0, 1] and gradient_clip must be positive")
         self.model_name = model
         self.device = torch.device(device)
         self.dataset = Path(dataset)
@@ -185,8 +211,18 @@ class Trainer:
         self.learning_rate = learning_rate
         self.dtype = dtype
         self.seed = seed
+        self.optimizer_name = optimizer
+        self.weight_decay = weight_decay
+        self.validation_fraction = validation_fraction
+        self.eval_interval = eval_interval
+        self.eval_batches = eval_batches
+        self.warmup_steps = warmup_steps
+        self.min_learning_rate_ratio = min_learning_rate_ratio
+        self.gradient_clip = gradient_clip
 
-    def _save(self, model: ByteTransformer, path: Path, step: int, loss: float) -> None:
+    def _save(
+        self, model: ByteTransformer, path: Path, step: int, loss: float, validation_loss: float | None
+    ) -> None:
         weights = {name: tensor.detach() for name, tensor in model.state_dict().items()}
         write_omf(
             path,
@@ -197,11 +233,13 @@ class Trainer:
                 "model": self.model_name,
                 "step": step,
                 "loss": loss,
-                "optimizer": "SGD8Bit",
+                "validation_loss": validation_loss,
+                "optimizer": self.optimizer_name,
             },
             dtype=self.dtype,
         )
-        print(f"checkpoint: {path} (step {step}, loss {loss:.4f})", flush=True)
+        validation = f", val_loss={validation_loss:.4f}" if validation_loss is not None else ""
+        print(f"checkpoint: {path} (step {step}, loss={loss:.4f}{validation})", flush=True)
 
     def train(self) -> Path:
         torch.manual_seed(self.seed)
@@ -210,31 +248,71 @@ class Trainer:
         config = dict(PRESETS[self.model_name])
         config["context"] = max(config["context"], self.seq_len)
         model = ByteTransformer(config).to(self.device)
-        optimizer = SGD8Bit(model.parameters(), lr=self.learning_rate)
+        if self.optimizer_name == "adamw":
+            decay = []
+            no_decay = []
+            for parameter in model.parameters():
+                (decay if parameter.ndim >= 2 else no_decay).append(parameter)
+            optimizer = torch.optim.AdamW(
+                [
+                    {"params": decay, "weight_decay": self.weight_decay},
+                    {"params": no_decay, "weight_decay": 0.0},
+                ],
+                lr=self.learning_rate,
+                betas=(0.9, 0.95),
+            )
+        else:
+            optimizer = SGD8Bit(model.parameters(), lr=self.learning_rate)
         periodic_checkpoint = self.output.with_name(f"{self.output.stem}-v1.omf")
-        data = _MMapBytes(self.dataset)
+        data = _MMapBytes(self.dataset, self.validation_fraction)
         started = time.monotonic()
         last_loss = float("nan")
+        last_validation_loss: float | None = None
+        warmup_steps = min(self.warmup_steps, max(0, self.steps - 1))
         try:
             model.train()
             for step in range(1, self.steps + 1):
+                if self.optimizer_name == "adamw":
+                    if step <= warmup_steps:
+                        lr_ratio = step / max(1, warmup_steps)
+                    else:
+                        progress = min(1.0, (step - warmup_steps) / max(1, self.steps - warmup_steps))
+                        cosine = 0.5 * (1.0 + np.cos(np.pi * progress))
+                        lr_ratio = self.min_learning_rate_ratio + (1.0 - self.min_learning_rate_ratio) * cosine
+                    for group in optimizer.param_groups:
+                        group["lr"] = self.learning_rate * float(lr_ratio)
                 for parameter in model.parameters():
                     parameter.grad = None
                 total_loss = 0.0
                 for _ in range(self.gradient_accumulation_steps):
-                    x, y = data.batch(self.batch_size, self.seq_len, self.device)
+                    x, y = data.batch(self.batch_size, self.seq_len, self.device, "train")
                     logits = model(x)
                     loss = F.cross_entropy(logits.reshape(-1, config["vocab"]), y.reshape(-1))
                     (loss / self.gradient_accumulation_steps).backward()
                     total_loss += loss.detach().item() / self.gradient_accumulation_steps
+                torch.nn.utils.clip_grad_norm_(model.parameters(), self.gradient_clip)
                 optimizer.step()
                 last_loss = total_loss
+                should_evaluate = step == 1 or step % self.eval_interval == 0 or step == self.steps
+                if should_evaluate:
+                    model.eval()
+                    validation_losses = []
+                    with torch.no_grad():
+                        for _ in range(self.eval_batches):
+                            x, y = data.batch(self.batch_size, self.seq_len, self.device, "validation")
+                            logits = model(x)
+                            validation_losses.append(
+                                F.cross_entropy(logits.reshape(-1, config["vocab"]), y.reshape(-1)).item()
+                            )
+                    last_validation_loss = float(np.mean(validation_losses))
+                    model.train()
                 if step == 1 or step % 10 == 0:
-                    print(f"step {step}/{self.steps} loss={last_loss:.4f}", flush=True)
+                    validation = f" val_loss={last_validation_loss:.4f}" if last_validation_loss is not None else ""
+                    print(f"step {step}/{self.steps} loss={last_loss:.4f}{validation}", flush=True)
                 if step % self.checkpoint_every == 0:
-                    self._save(model, periodic_checkpoint, step, last_loss)
+                    self._save(model, periodic_checkpoint, step, last_loss, last_validation_loss)
                 if step == self.steps:
-                    self._save(model, self.output, step, last_loss)
+                    self._save(model, self.output, step, last_loss, last_validation_loss)
             print(f"training finished in {time.monotonic() - started:.1f}s", flush=True)
         finally:
             data.close()
