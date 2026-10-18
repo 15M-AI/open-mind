@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.omf
+*.gguf
+*.safetensors
+*.bin
+target/
+*.egg-info/
+build/
+dist/
+.env
+.env.*
+!.env.example
+.open-mind/

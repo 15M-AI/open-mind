@@ -1,0 +1,15 @@
+[package]
+name = "open-mind-runtime"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "om"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.7"
+open-mind-format = { path = "../open-mind-format" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }

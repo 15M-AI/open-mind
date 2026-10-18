@@ -1,0 +1,3 @@
+[workspace]
+members = ["open-mind-format", "open-mind-runtime"]
+resolver = "2"
