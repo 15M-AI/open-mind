@@ -109,7 +109,7 @@ through the `om` runtime and does not depend on Ollama:
 
 ```bash
 cd ~/OpenMind-TUI
-pip install -e .
+make install
 open-mind-tui
 ```
 
