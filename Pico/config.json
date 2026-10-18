@@ -29,6 +29,7 @@
     "seed": 42
   },
   "parameter_count": 14983680,
+  "code_license": "Apache-2.0",
   "model_license": "UNDECIDED",
   "dataset_license": "MUST_BE_RECORDED_BEFORE_RELEASE"
 }

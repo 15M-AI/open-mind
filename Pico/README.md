@@ -121,9 +121,10 @@ data actually used.
 
 ## License status
 
-Pico is intended to be open source, but its model-weight license is
-**undecided** until the training dataset and its terms are recorded. The code
-and weights must not be labeled with a permissive license by assumption.
+Pico's training code and the Open Mind core repository use **Apache-2.0**.
+Its model-weight license is **undecided** until the training dataset and its
+terms are recorded. Do not label the weights with a permissive license by
+assumption.
 Complete `MODEL_CARD.md` and the provenance manifest before publishing a model
 release. Training data and checkpoints are excluded from Git by the local
 `.gitignore`.

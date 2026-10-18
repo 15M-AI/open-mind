@@ -161,5 +161,5 @@ names remain as directories: `open-mind-format`, `open-mind-runtime`, and
 `open-mind-train`. The publisher script lives outside this repository in
 `~/open-mind-publisher/`.
 
-Choose and add a license before publishing if you want to grant reuse
-permissions. No license is included by default.
+The core repository is licensed under Apache-2.0. Pico's model weights are not
+licensed yet; their license depends on the data used to train them.

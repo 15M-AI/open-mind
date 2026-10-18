@@ -53,10 +53,11 @@ review for repetition, memorization, and UTF-8 behavior.
 
 ## Dataset and model licenses
 
-The model-weight license is **UNDECIDED**. Record dataset provenance and license
-terms in `DATASET_PROVENANCE_TEMPLATE.csv`, then determine whether those terms
-permit training and redistribution of derived weights. No dataset or trained
-weights are included in this source repository.
+The Pico training code and the Open Mind core repository are licensed under
+Apache-2.0. The model-weight license is **UNDECIDED**. Record dataset provenance
+and license terms in `DATASET_PROVENANCE_TEMPLATE.csv`, then determine whether
+those terms permit training and redistribution of derived weights. No dataset
+or trained weights are included in this source repository.
 
 ## Release checklist
 
